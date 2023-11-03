@@ -15,14 +15,14 @@ import GPTEncoder
 #endif
 
 public class ChatGPTAPI: @unchecked Sendable {
-    
+
     public enum Constants {
         public static let defaultModel = "gpt-3.5-turbo"
         public static let defaultSystemText = "You're a helpful assistant"
         public static let defaultTemperature = 0.5
     }
-    
-    private let urlString = "https://api.openai.com/v1/chat/completions"
+
+    private let urlString: String
     private let apiKey: String
     private let gptEncoder = GPTEncoder()
     public private(set) var historyList = [Message]()
@@ -32,28 +32,29 @@ public class ChatGPTAPI: @unchecked Sendable {
         df.dateFormat = "YYYY-MM-dd"
         return df
     }()
-    
+
     private let jsonDecoder: JSONDecoder = {
         let jsonDecoder = JSONDecoder()
         jsonDecoder.keyDecodingStrategy = .convertFromSnakeCase
         return jsonDecoder
     }()
-    
+
     private var headers: [String: String] {
         [
             "Content-Type": "application/json",
             "Authorization": "Bearer \(apiKey)"
         ]
     }
-    
+
     private func systemMessage(content: String) -> Message {
         .init(role: "system", content: content)
     }
-    
-    public init(apiKey: String) {
+
+    public init(apiKey: String, urlString: String = "https://api.openai.com/v1/chat/completions") {
         self.apiKey = apiKey
+        self.urlString = urlString
     }
-    
+
     private func generateMessages(from text: String, systemText: String) -> [Message] {
         var messages = [systemMessage(content: systemText)] + historyList + [Message(role: "user", content: text)]
         if gptEncoder.encode(text: messages.content).count > 4096  {
@@ -62,7 +63,7 @@ public class ChatGPTAPI: @unchecked Sendable {
         }
         return messages
     }
-    
+
     private func jsonBody(text: String, model: String, systemText: String, temperature: Double, stream: Bool = true) throws -> Data {
         let request = Request(model: model,
                         temperature: temperature,
@@ -70,12 +71,12 @@ public class ChatGPTAPI: @unchecked Sendable {
                         stream: stream)
         return try JSONEncoder().encode(request)
     }
-    
+
     private func appendToHistoryList(userText: String, responseText: String) {
         self.historyList.append(Message(role: "user", content: userText))
         self.historyList.append(Message(role: "assistant", content: responseText))
     }
-    
+
     #if os(Linux)
     private let httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
     private var clientRequest: HTTPClientRequest {
@@ -90,7 +91,7 @@ public class ChatGPTAPI: @unchecked Sendable {
     public func sendMessageStream(text: String) async throws -> AsyncThrowingStream<String, Error> {
          var request = self.clientRequest
         request.body = .bytes(try jsonBody(text: text, stream: true))
-        
+
         let response = try await httpClient.execute(request, timeout: .seconds(25))
         try Task.checkCancellation()
 
@@ -106,7 +107,7 @@ public class ChatGPTAPI: @unchecked Sendable {
             }
             throw error
         }
-        
+
         var responseText = ""
         return AsyncThrowingStream { [weak self] in
             guard let self else { return nil }
@@ -132,7 +133,7 @@ public class ChatGPTAPI: @unchecked Sendable {
                             temperature: Double = ChatGPTAPI.Constants.defaultTemperature) async throws -> String {
         var request = self.clientRequest
         request.body = .bytes(try jsonBody(text: text, model: model, systemText: systemText, temperature: temperature, stream: false))
-        
+
         let response = try await httpClient.execute(request, timeout: .seconds(25))
         try Task.checkCancellation()
         var data = Data()
@@ -148,7 +149,7 @@ public class ChatGPTAPI: @unchecked Sendable {
             }
             throw error
         }
-        
+
         do {
             let completionResponse = try self.jsonDecoder.decode(CompletionResponse.self, from: data)
             let responseText = completionResponse.choices.first?.message.content ?? ""
@@ -157,13 +158,13 @@ public class ChatGPTAPI: @unchecked Sendable {
         } catch {
             throw error
         }
-        
+
     }
 
     deinit {
         let client = self.httpClient
         Task.detached { try await client.shutdown() }
-        
+
     }
     #else
 
@@ -184,11 +185,11 @@ public class ChatGPTAPI: @unchecked Sendable {
         urlRequest.httpBody = try jsonBody(text: text, model: model, systemText: systemText, temperature: temperature)
         let (result, response) = try await urlSession.bytes(for: urlRequest)
         try Task.checkCancellation()
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw "Invalid response"
         }
-        
+
         guard 200...299 ~= httpResponse.statusCode else {
             var errorText = ""
             for try await line in result.lines {
@@ -200,8 +201,8 @@ public class ChatGPTAPI: @unchecked Sendable {
             }
             throw "Bad Response: \(httpResponse.statusCode). \(errorText)"
         }
-        
-        
+
+
         var responseText = ""
         return AsyncThrowingStream { [weak self] in
             guard let self else { return nil }
@@ -226,13 +227,13 @@ public class ChatGPTAPI: @unchecked Sendable {
                             temperature: Double = ChatGPTAPI.Constants.defaultTemperature) async throws -> String {
         var urlRequest = self.urlRequest
         urlRequest.httpBody = try jsonBody(text: text, model: model, systemText: systemText, temperature: temperature, stream: false)
-        
+
         let (data, response) = try await urlSession.data(for: urlRequest)
         try Task.checkCancellation()
         guard let httpResponse = response as? HTTPURLResponse else {
             throw "Invalid response"
         }
-        
+
         guard 200...299 ~= httpResponse.statusCode else {
             var error = "Bad Response: \(httpResponse.statusCode)"
             if let errorResponse = try? jsonDecoder.decode(ErrorRootResponse.self, from: data).error {
@@ -240,7 +241,7 @@ public class ChatGPTAPI: @unchecked Sendable {
             }
             throw error
         }
-        
+
         do {
             let completionResponse = try self.jsonDecoder.decode(CompletionResponse.self, from: data)
             let responseText = completionResponse.choices.first?.message.content ?? ""
@@ -251,14 +252,14 @@ public class ChatGPTAPI: @unchecked Sendable {
         }
     }
     #endif
-    
+
     public func deleteHistoryList() {
         self.historyList.removeAll()
     }
-    
+
     public func replaceHistoryList(with messages: [Message]) {
         self.historyList = messages
     }
-    
+
 }
 
